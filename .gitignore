@@ -14,6 +14,7 @@
 *.dat
 *.csv
 *.dat.all
+*.png
 *.a
 *.asn1.[ch]
 *.bin
