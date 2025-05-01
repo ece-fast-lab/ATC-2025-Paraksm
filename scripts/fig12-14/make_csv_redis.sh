@@ -55,7 +55,7 @@ usleep_times["candidate"]="50"
 #########################################################
 # 			GET VALUE			#
 #########################################################
-echo "workload,system_mode,tree_size,cand_size,nice,usleep_time_min(us),read_latency,insert_latency,update_latency,llc_miss_rate(%),ksmd_cpu_utilization(%),memory_saving_per_cpu_cycles,memory_saving_per_cpu_cycles_by_time,memmory_saving(MB)"
+echo "workload,system_mode,tree_size,cand_size,nice,usleep_time_min(us),read_latency,insert_latency,update_latency,llc_miss_rate(%),ksmd_cpu_utilization(%),dedup_efficiency,memmory_saving(MB)"
 for workload in "${workloads[@]}"; do
 for system_mode in "${system_modes[@]}"; do
 for tree_size in ${tree_sizes[${system_mode}]}; do
@@ -157,7 +157,7 @@ else
 	memory_saving_per_cpu_cycles_by_time=$(echo "scale=3; 1024 * 1024 * $memory_saving_by_time/$ksm_cpu_cycles_by_time" | bc)
 fi
 
-echo "$workload,$system_mode,$tree_size,$cand_size,$nice_value,$usleep_time,$read_latency_affected_VM,$insert_latency_affected_VM,$update_latency_affected_VM,$llc_miss_rate,$ksmd_cpu_utilization,$memory_saving_per_cpu_cycles,$memory_saving_per_cpu_cycles_by_time,$memory_saving"
+echo "$workload,$system_mode,$tree_size,$cand_size,$nice_value,$usleep_time,$read_latency_affected_VM,$insert_latency_affected_VM,$update_latency_affected_VM,$llc_miss_rate,$ksmd_cpu_utilization,$memory_saving_per_cpu_cycles_by_time,$memory_saving"
 
 done
 done

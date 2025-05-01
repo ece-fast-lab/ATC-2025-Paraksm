@@ -55,7 +55,7 @@ usleep_times["candidate"]="95" # 70 100 130
 #########################################################
 # 			GET VALUE			#
 #########################################################
-echo "workload,system_mode,tree_size,cand_size,usleep_time_min(us),exec_time,llc_miss_rate(%),ksmd_cpu_utilization(%),memory_saving_per_cpu_cycles,memory_saving_per_cpu_cycles_by_time,memory_saving(MB)"
+echo "workload,system_mode,tree_size,cand_size,usleep_time_min(us),exec_time,llc_miss_rate(%),ksmd_cpu_utilization(%),dedup_efficiency,memory_saving(MB)"
 for workload in "${workloads[@]}"; do
 for system_mode in "${system_modes[@]}"; do
 for tree_size in ${tree_sizes[${system_mode}]}; do
@@ -148,7 +148,7 @@ else
 	crc_utilization=0
 fi
 
-echo "$workload,$system_mode,$tree_size,$cand_size,$usleep_time,$run_time_affected_VM,$llc_miss_rate,$ksmd_cpu_utilization,$memory_saving_per_cpu_cycles,$memory_saving_per_cpu_cycles_by_time,$memory_saving"
+echo "$workload,$system_mode,$tree_size,$cand_size,$usleep_time,$run_time_affected_VM,$llc_miss_rate,$ksmd_cpu_utilization,$memory_saving_per_cpu_cycles,$memory_saving"
 
 done
 done

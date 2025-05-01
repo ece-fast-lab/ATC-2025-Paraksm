@@ -10,7 +10,7 @@ sudo ../common/node1_mem_disable.sh
 sudo ../common/change_to_perf.sh
 sudo ../common/cstate_disable.sh
 
-#./run_redis.sh
+./run_redis.sh
 
-./run_graph500.sh
+#./run_graph500.sh
 #./run_liblinear.sh
