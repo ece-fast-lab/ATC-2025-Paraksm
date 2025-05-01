@@ -90,8 +90,6 @@ struct idxd_irq_entry {
 	int int_handle;
 	ioasid_t pasid;
 
-	// mhkim
-	//struct completion done;
 	int done;
 	struct wait_queue_head *ksm_wait_queue;
 };

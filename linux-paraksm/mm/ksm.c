@@ -384,7 +384,6 @@ enum ksm_debug_enum {
 	STABLE_TREE_SEARCH,
 	UNSTABLE_TREE_SEARCH_INSERT,
 	STABLE_TREE_INSERT,
-	// TODO[osm] : To measure compare_candidate
 	COMPARE_CANDIDATE,
 	UNSTABLE_UNINSERT_GET_MERGEABLE_PAGE,
 	UNSTABLE_UNINSERT_POINTER,
@@ -407,7 +406,6 @@ static const char * const ksm_debug_stat_strs[] = {
 	"stable_tree_search",
 	"unstable_tree_search_insert",
 	"stable_tree_insert",
-	// TODO[osm] : To measure compare_candidate
 	"compare_candidate",
 	"unstable_uninsert_get_mergeable_page",
 	"unstable_uninsert_pointer",
@@ -613,7 +611,6 @@ struct ksm_dsa_info ksm_dsa_info;
 /* DSA related sysfs parameter */
 static char dsa_cdev_name[256] = "/dev/dma_dsa/wq0.0"; // work queue for ksmd
 static unsigned long use_dsa = 0;
-// TODO[osm] : To measure compare_candidate
 static unsigned long use_dsa_for_hash = 1;
 enum dsa_completion_modes {
 	DSA_COMPL_IRQ,
