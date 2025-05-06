@@ -13,6 +13,1276 @@
  *	Hugh Dickins
  */
 
+// ===================================================================
+//             STYX offload code begins
+// ===================================================================
+/*
+ * University of Illinois - Urbana Champaign, 2022, ECE, FAST Lab
+ *  -- kbench, modify from krping
+ *  -- krping github: https://github.com/larrystevenwise/krping
+ *
+ * Copyright (c) 2005 Ammasso, Inc. All rights reserved.
+ * Copyright (c) 2006-2009 Open Grid Computing, Inc. All rights reserved.
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+#include <linux/device.h>
+#include <linux/err.h>
+#include <linux/in.h>
+#include <linux/inet.h>
+#include <linux/init.h>
+#include <linux/ktime.h>
+#include <linux/list.h>
+#include <linux/parser.h>
+#include <linux/pci.h>
+#include <linux/random.h>
+#include <linux/signal.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/version.h>
+
+#include <linux/lzo.h>
+
+#include <asm/atomic.h>
+#include <asm/pci.h>
+
+#include <rdma/ib_verbs.h>
+#include <rdma/rdma_cm.h>
+
+#include <linux/kthread.h>
+#include <linux/sched.h>
+
+#include <asm/errno.h>
+#include <linux/kernel.h>
+
+// Initial KSM RDMA Offloading for only once
+// KSM offload knob
+static int use_styx = 0;
+static int rdma_init = 0;
+
+#define NEG_RESULT 2
+#define POS_RESULT 1
+#define ZERO_RESULT 0
+
+// .h
+struct global_data {
+	wait_queue_head_t wq;
+	atomic_t thread_count;
+};
+
+struct kbench_recv_data {
+	// 0 -- buf/rkey info
+	// 1 -- send page data directly
+	// function type: 1: checksum, 2:comparison
+	u8 data[8192];
+	int function_type;
+	uint32_t comp_len;
+};
+
+struct kbench_rdma_info {
+	uint64_t buf;
+	uint32_t rkey;
+	uint32_t size;
+};
+
+enum kbench_state {
+	IDLE = 1,
+	CONNECT_REQUEST,
+	ADDR_RESOLVED,
+	ROUTE_RESOLVED,
+	CONNECTED,
+
+	RDMA_AWAIT,
+
+	RDMA_KEY_RECV,
+	RDMA_REQ_RECV,
+	RDMA_RESP_RECV,
+
+	RDMA_READ_COMPLETE,
+	RDMA_WRITE_COMPLETE,
+	ERROR
+};
+
+enum work_status {
+	WORK_SETUP = 0,
+	WORK_IDLE,
+	WORK_REQ, // 2
+	WORK_WORKING, // 3
+	WORK_DONE, // 4
+	WORK_ERROR // 5
+};
+struct kbench_context {
+	struct ib_cq *cq;
+	struct ib_pd *pd;
+	struct ib_qp *qp;
+	struct ib_mr *mr;
+	struct rdma_cm_id *cm_id;
+	struct rdma_cm_id *child_cm_id;
+	struct list_head list;
+	char volatile *buf;
+
+	uint16_t port;
+	u8 addr[16];
+
+	struct global_data *gd;
+
+	enum kbench_state state;
+	wait_queue_head_t sem;
+	int txdepth;
+
+	int page_list_len;
+	int size;
+	u8 key;
+
+	struct ib_reg_wr reg_mr_wr;
+	struct ib_send_wr invalidate_wr;
+	struct ib_mr *reg_mr;
+
+	struct ib_recv_wr rq_wr; /* recv work request record */
+	struct ib_sge recv_sgl; /* recv single SGE */
+	struct kbench_rdma_info *recv_buf;
+	struct kbench_recv_data *recv_data;
+	u64 recv_dma_addr;
+	DEFINE_DMA_UNMAP_ADDR(recv_mapping);
+
+	struct ib_send_wr sq_wr; /* send work requrest record */
+	struct ib_sge send_sgl[2];
+	struct kbench_rdma_info *send_buf;
+	struct kbench_recv_data *send_data;
+	u64 send_dma_addr;
+	DEFINE_DMA_UNMAP_ADDR(send_mapping);
+
+	struct ib_rdma_wr rdma_sq_wr; /* rdma work request record */
+	struct ib_sge rdma_sgl; /* rdma single SGE */
+	char *rdma_buf; /* used as rdma sink */
+	u64 rdma_dma_addr;
+	DEFINE_DMA_UNMAP_ADDR(rdma_mapping);
+
+	uint32_t remote_rkey; /* remote guys RKEY */
+	uint64_t remote_addr; /* remote guys TO */
+	uint32_t remote_len; /* remote guys LEN */
+
+	u8 str_buf[16];
+	int num_threads;
+	int thread_id;
+	int count;
+
+	enum work_status work_flag;
+};
+
+#define MAX_SIZE (PAGE_SIZE * 2) /* max size mmaped to userspace */
+
+#define PFX "kbench: "
+static int debug = 0;
+#define DEBUG_LOG  \
+	if (debug) \
+	printk
+
+#define htonll(x) cpu_to_be64((x))
+#define ntohll(x) cpu_to_be64((x))
+
+static LIST_HEAD(kbench_ctxs);
+
+/*
+ * rdma abbrev hash table
+ *  cq - complete queue
+ *  pd - protection domain
+ *  qp - queue pair (send/recv queue)
+ *  mr - memory region
+ *  cm - connection manager
+ *  wr - work request
+ *  wc - work complete
+ */
+
+#define OPT_NOPARAM 1
+#define OPT_INT 2
+#define OPT_STRING 4
+
+#define RPING_BUFSIZE 128 * 1024
+#define RPING_SQ_DEPTH 64
+
+// #define DO_TEST
+
+static void kbench_setup_wr(struct kbench_context *ctx)
+{
+	ctx->recv_buf = (struct kbench_rdma_info *)(&(ctx->recv_data->data));
+	ctx->recv_sgl.addr = ctx->recv_dma_addr;
+	ctx->recv_sgl.length = sizeof(struct kbench_recv_data);
+	ctx->recv_sgl.lkey = ctx->pd->local_dma_lkey;
+	ctx->rq_wr.sg_list =
+		&ctx->recv_sgl; // associate work request with a scatter gather list
+	ctx->rq_wr.num_sge = 1;
+
+	ctx->send_buf = (struct kbench_rdma_info *)(&(ctx->send_data->data));
+	ctx->send_sgl[0].addr = ctx->send_dma_addr;
+	ctx->send_sgl[0].length = PAGE_SIZE;
+	ctx->send_sgl[0].lkey = ctx->pd->local_dma_lkey;
+	ctx->send_sgl[1].addr = ctx->send_dma_addr;
+	ctx->send_sgl[1].length = PAGE_SIZE;
+	ctx->send_sgl[1].lkey = ctx->pd->local_dma_lkey;
+	ctx->sq_wr.num_sge = 2;
+
+	ctx->sq_wr.opcode = IB_WR_SEND;
+	ctx->sq_wr.send_flags = IB_SEND_SIGNALED;
+	ctx->sq_wr.sg_list = ctx->send_sgl;
+	// ctx->sq_wr.num_sge = 1;
+
+	/*
+   * A chain of 2 WRs, INVALDATE_MR + REG_MR.
+   * both unsignaled.  The client uses them to reregister
+   * the rdma buffers with a new key each iteration.
+   */
+	ctx->reg_mr_wr.wr.opcode = IB_WR_REG_MR;
+	ctx->reg_mr_wr.mr = ctx->reg_mr;
+
+	ctx->invalidate_wr.next = &ctx->reg_mr_wr.wr;
+	ctx->invalidate_wr.opcode = IB_WR_LOCAL_INV;
+}
+
+static int kbench_setup_buffers(struct kbench_context *ctx)
+{
+	int ret;
+
+	DEBUG_LOG(PFX "kbench called on ctx %p\n", ctx);
+	ctx->reg_mr = NULL;
+	ctx->rdma_buf = NULL;
+	ctx->recv_data = NULL;
+	ctx->send_data = NULL;
+
+	// ===========================================
+	//             Memory buffer init (for actual data transfer)
+	// ===========================================
+	// recv buf (receive rkey ... info)
+	ctx->recv_data = kzalloc(sizeof(struct kbench_recv_data), GFP_KERNEL);
+	ctx->recv_dma_addr = ib_dma_map_single(ctx->pd->device, ctx->recv_data,
+					       sizeof(struct kbench_recv_data),
+					       DMA_BIDIRECTIONAL);
+	dma_unmap_addr_set(ctx, recv_mapping, ctx->recv_dma_addr);
+
+	// send buf (receive rkey ... info)
+	ctx->send_data = kzalloc(sizeof(struct kbench_recv_data), GFP_KERNEL);
+	ctx->send_dma_addr = ib_dma_map_single(ctx->pd->device, ctx->send_data,
+					       sizeof(struct kbench_recv_data),
+					       DMA_BIDIRECTIONAL);
+	dma_unmap_addr_set(ctx, send_mapping, ctx->send_dma_addr);
+
+	// buffer for rdma write / read
+	ctx->rdma_buf = dma_alloc_coherent(ctx->pd->device->dma_device,
+					   ctx->size, &ctx->rdma_dma_addr,
+					   GFP_KERNEL);
+	if (!ctx->rdma_buf) {
+		DEBUG_LOG(PFX "rdma_buf allocation failed\n");
+		ret = -ENOMEM;
+		goto bail;
+	}
+	dma_unmap_addr_set(ctx, rdma_mapping, ctx->rdma_dma_addr);
+	ctx->page_list_len = (((ctx->size - 1) & PAGE_MASK) + PAGE_SIZE) >>
+			     PAGE_SHIFT;
+
+	// ===========================================
+	//             Memory region init (for transfering rkey, addr, len)
+	// ===========================================
+	// alloc mr for rdma send / recv
+	ctx->reg_mr =
+		ib_alloc_mr(ctx->pd, IB_MR_TYPE_MEM_REG, ctx->page_list_len);
+	if (IS_ERR(ctx->reg_mr)) {
+		ret = PTR_ERR(ctx->reg_mr);
+		DEBUG_LOG(PFX "recv_data reg_mr failed %d\n", ret);
+		goto bail;
+	}
+	DEBUG_LOG(PFX "reg rkey 0x%x page_list_len %u\n", ctx->reg_mr->rkey,
+		  ctx->page_list_len);
+
+	// setup work requests and scatter gather lists
+	kbench_setup_wr(ctx);
+	DEBUG_LOG(PFX "allocated & registered buffers...\n");
+	return 0;
+bail:
+	if (ctx->recv_data != NULL) {
+		kfree(ctx->recv_data);
+	}
+	if (ctx->send_data != NULL) {
+		kfree(ctx->send_data);
+	}
+	if (ctx->reg_mr && !IS_ERR(ctx->reg_mr))
+		ib_dereg_mr(ctx->reg_mr);
+	if (ctx->rdma_buf) {
+		dma_free_coherent(ctx->pd->device->dma_device, ctx->size,
+				  ctx->rdma_buf, ctx->rdma_dma_addr);
+	}
+	return ret;
+}
+
+static void kbench_free_buffers(struct kbench_context *ctx)
+{
+	dma_unmap_single(ctx->pd->device->dma_device,
+			 dma_unmap_addr(ctx, recv_mapping),
+			 sizeof(struct kbench_recv_data), DMA_BIDIRECTIONAL);
+	dma_unmap_single(ctx->pd->device->dma_device,
+			 dma_unmap_addr(ctx, send_mapping),
+			 sizeof(struct kbench_recv_data), DMA_BIDIRECTIONAL);
+	if (ctx->reg_mr)
+		ib_dereg_mr(ctx->reg_mr);
+	if (ctx->recv_data != NULL) {
+		kfree(ctx->recv_data);
+	}
+	if (ctx->send_data != NULL) {
+		kfree(ctx->send_data);
+	}
+	dma_free_coherent(ctx->pd->device->dma_device, ctx->size, ctx->rdma_buf,
+			  ctx->rdma_dma_addr);
+}
+
+static void kbench_free_qp(struct kbench_context *ctx)
+{
+	ib_destroy_qp(ctx->qp);
+	ib_destroy_cq(ctx->cq);
+	ib_dealloc_pd(ctx->pd);
+}
+
+static void fill_sockaddr(struct sockaddr_storage *sin,
+			  struct kbench_context *ctx)
+{
+	// assume IPV4, please refer to krping for IPV6 details
+	struct sockaddr_in *sin4;
+
+	memset(sin, 0, sizeof(*sin));
+	sin4 = (struct sockaddr_in *)sin;
+	sin4->sin_family = AF_INET;
+	memcpy((void *)&sin4->sin_addr.s_addr, ctx->addr, 4);
+	sin4->sin_port = ctx->port;
+}
+
+static int kbench_cma_event_handler(struct rdma_cm_id *cma_id,
+				    struct rdma_cm_event *event)
+{
+	int ret;
+	struct kbench_context *ctx = cma_id->context;
+
+	DEBUG_LOG("cma_event type %d cma_id %p (%s)\n", event->event, cma_id,
+		  (cma_id == ctx->cm_id) ? "parent" : "child");
+
+	switch (event->event) {
+	case RDMA_CM_EVENT_ADDR_RESOLVED:
+		ctx->state = ADDR_RESOLVED;
+		ret = rdma_resolve_route(cma_id, 2000);
+		if (ret) {
+			printk(KERN_ERR PFX "rdma_resolve_route error %d\n",
+			       ret);
+			wake_up_interruptible(&ctx->sem);
+		}
+		break;
+
+	case RDMA_CM_EVENT_ROUTE_RESOLVED:
+		ctx->state = ROUTE_RESOLVED;
+		wake_up_interruptible(&ctx->sem);
+		break;
+
+	case RDMA_CM_EVENT_CONNECT_REQUEST:
+		// only make sense for server to receive this
+		ctx->state = CONNECT_REQUEST;
+		ctx->child_cm_id = cma_id;
+		DEBUG_LOG("child cma %p\n", ctx->child_cm_id);
+		wake_up_interruptible(&ctx->sem);
+		break;
+
+	case RDMA_CM_EVENT_ESTABLISHED:
+		DEBUG_LOG("ESTABLISHED\n");
+		ctx->state =
+			CONNECTED; //??? original krping wait until wr complete
+		wake_up_interruptible(&ctx->sem);
+		break;
+
+	case RDMA_CM_EVENT_ADDR_ERROR:
+	case RDMA_CM_EVENT_ROUTE_ERROR:
+	case RDMA_CM_EVENT_CONNECT_ERROR:
+	case RDMA_CM_EVENT_UNREACHABLE:
+	case RDMA_CM_EVENT_REJECTED:
+		printk(KERN_ERR PFX "cma event %d, error %d\n", event->event,
+		       event->status);
+		ctx->state = ERROR;
+		wake_up_interruptible(&ctx->sem);
+		break;
+
+	case RDMA_CM_EVENT_DISCONNECTED:
+		printk(KERN_ERR PFX "DISCONNECT EVENT...\n");
+		ctx->state = ERROR;
+		wake_up_interruptible(&ctx->sem);
+		break;
+
+	case RDMA_CM_EVENT_DEVICE_REMOVAL:
+		printk(KERN_ERR PFX "cma detected device removal!!!!\n");
+		ctx->state = ERROR;
+		wake_up_interruptible(&ctx->sem);
+		break;
+
+	default:
+		printk(KERN_ERR PFX "oof bad type!\n");
+		wake_up_interruptible(&ctx->sem);
+		break;
+	}
+	return 0;
+}
+
+static int client_recv(struct kbench_context *ctx, struct ib_wc *wc)
+{
+	if (wc->byte_len > 0) {
+		DEBUG_LOG("received compressed data, len: %d\n", wc->byte_len);
+		ctx->state = RDMA_RESP_RECV;
+	} else {
+		DEBUG_LOG("client received 0 len\n");
+	}
+	return 0;
+}
+
+static void kbench_cq_event_handler(struct ib_cq *cq, void *ctx_in)
+{
+	struct kbench_context *ctx;
+	struct ib_wc wc;
+	const struct ib_recv_wr *bad_wr;
+	int ret;
+
+	ctx = (struct kbench_context *)ctx_in;
+	BUG_ON(ctx->cq != cq);
+	if (ctx->state == ERROR) {
+		printk(KERN_ERR PFX "cq completion in ERROR state\n");
+		return;
+	}
+
+	// TODO, update to dynamic poll
+	ib_req_notify_cq(ctx->cq, IB_CQ_NEXT_COMP);
+
+	while ((ret = ib_poll_cq(ctx->cq, 1, &wc)) == 1) {
+		if (wc.status) {
+			if (wc.status == IB_WC_WR_FLUSH_ERR) {
+				DEBUG_LOG("cq flushed\n");
+				continue;
+			} else {
+				printk(KERN_ERR PFX
+				       "cq completion failed with "
+				       "wr_id %Lx status %d opcode %d vender_err %x\n",
+				       wc.wr_id, wc.status, wc.opcode,
+				       wc.vendor_err);
+				goto error;
+			}
+		}
+
+		switch (wc.opcode) {
+		case IB_WC_SEND:
+			DEBUG_LOG("send completion\n");
+			break;
+
+		case IB_WC_RDMA_WRITE:
+			DEBUG_LOG("rdma write completion\n");
+			ctx->state = RDMA_WRITE_COMPLETE;
+			wake_up_interruptible(&ctx->sem);
+			break;
+
+		case IB_WC_RDMA_READ:
+			DEBUG_LOG("rdma read completion\n");
+			ctx->state = RDMA_READ_COMPLETE;
+			wake_up_interruptible(&ctx->sem);
+			break;
+
+		case IB_WC_RECV:
+			DEBUG_LOG("recv completion\n");
+			ret = client_recv(ctx, &wc);
+			if (ret) {
+				printk(KERN_ERR PFX "recv wc error: %d\n", ret);
+				goto error;
+			}
+
+			// post a linked list of WR to the RQ of ctx->qp
+			ret = ib_post_recv(ctx->qp, &ctx->rq_wr, &bad_wr);
+			if (ret) {
+				printk(KERN_ERR PFX "post recv error: %d\n",
+				       ret);
+				goto error;
+			}
+			wake_up_interruptible(&ctx->sem);
+			DEBUG_LOG("IB_WC_RECV wakeup, %d\n", ctx->state);
+			break;
+
+		default:
+			printk(KERN_ERR PFX
+			       "%s:%d Unexpected opcode %d, Shutting down\n",
+			       __func__, __LINE__, wc.opcode);
+			goto error;
+		}
+	}
+	if (ret) {
+		printk(KERN_ERR PFX "poll error %d\n", ret);
+		goto error;
+	}
+	return;
+error:
+	ctx->state = ERROR;
+	wake_up_interruptible(&ctx->sem);
+}
+
+static u32 kbench_rdma_rkey(struct kbench_context *ctx, u64 buf)
+{
+	u32 rkey;
+	const struct ib_send_wr *bad_wr;
+	int ret;
+	struct scatterlist sg = { 0 };
+
+	ctx->invalidate_wr.ex.invalidate_rkey = ctx->reg_mr->rkey;
+
+	// Update the reg key.
+	ib_update_fast_reg_key(ctx->reg_mr, ++ctx->key);
+	ctx->reg_mr_wr.key = ctx->reg_mr->rkey;
+
+	// Update the reg WR with new buf info.
+	ctx->reg_mr_wr.access = IB_ACCESS_REMOTE_READ | IB_ACCESS_REMOTE_WRITE |
+				IB_ACCESS_LOCAL_WRITE;
+
+	// buf --> sg
+	sg_dma_address(&sg) = buf;
+	sg_dma_len(&sg) = ctx->size;
+
+	// sg --> mr
+	ret = ib_map_mr_sg(ctx->reg_mr, &sg, 1, NULL, PAGE_SIZE);
+	BUG_ON(ret <= 0 || ret > ctx->page_list_len);
+
+	DEBUG_LOG(PFX "reg_mr new rkey 0x%x pgsz %u len %lu"
+		      " iova_start %llx\n",
+		  ctx->reg_mr_wr.key, ctx->reg_mr->page_size,
+		  (unsigned long)ctx->reg_mr->length,
+		  (unsigned long long)ctx->reg_mr->iova);
+
+	// IB_WR_REG_MR
+	ret = ib_post_send(ctx->qp, &ctx->reg_mr_wr.wr, &bad_wr);
+
+	if (ret) {
+		printk(KERN_ERR PFX "post send error %d\n", ret);
+		ctx->state = ERROR;
+	}
+	rkey = ctx->reg_mr->rkey;
+	return rkey;
+}
+
+static void kbench_format_send(struct kbench_context *ctx, u64 buf)
+{
+	// all send related buf are tied to sq_wr
+	struct kbench_rdma_info *info = ctx->send_buf;
+	u32 rkey;
+
+	// generate new rkey, register buf as memory region
+	rkey = kbench_rdma_rkey(ctx, buf);
+
+	// config send_buf
+	info->buf = htonll(buf);
+	info->rkey = htonl(rkey);
+	info->size = htonl(ctx->size);
+	DEBUG_LOG("RDMA addr %llx rkey %x len %d\n", (unsigned long long)buf,
+		  rkey, ctx->size);
+}
+
+static int kbench_connect_client(struct kbench_context *ctx)
+{
+	struct rdma_conn_param conn_param;
+	int ret;
+
+	memset(&conn_param, 0, sizeof conn_param);
+	conn_param.responder_resources = 1;
+	conn_param.initiator_depth = 1;
+	conn_param.retry_count = 10;
+
+	ret = rdma_connect(ctx->cm_id, &conn_param);
+	if (ret) {
+		printk(KERN_ERR PFX "rdma_connect error %d\n", ret);
+		return ret;
+	}
+	DEBUG_LOG("rdma_connect issued, await hanlder\n");
+
+	wait_event_interruptible(ctx->sem, ctx->state >= CONNECTED);
+	if (ctx->state != CONNECTED) {
+		printk(KERN_ERR PFX "wait for CONNECTED state %d\n",
+		       ctx->state);
+		return -1;
+	}
+
+	DEBUG_LOG("rdma_connect successful\n");
+	return 0;
+}
+
+static int kbench_create_qp(struct kbench_context *ctx)
+{
+	struct ib_qp_init_attr init_attr;
+	int ret;
+
+	memset(&init_attr, 0, sizeof(init_attr));
+	init_attr.cap.max_send_wr = RPING_SQ_DEPTH * 4;
+	init_attr.cap.max_recv_wr = RPING_SQ_DEPTH * 4;
+
+	DEBUG_LOG("max_send/recv: %d\n", init_attr.cap.max_send_wr);
+
+	/* For flush_qp() */
+	init_attr.cap.max_send_wr++;
+	init_attr.cap.max_recv_wr++;
+
+	init_attr.cap.max_recv_sge = 1;
+	init_attr.cap.max_send_sge = 2;
+
+	init_attr.qp_type = IB_QPT_RC;
+	init_attr.send_cq = ctx->cq;
+	init_attr.recv_cq = ctx->cq;
+	init_attr.sq_sig_type = IB_SIGNAL_REQ_WR;
+
+	ret = rdma_create_qp(ctx->cm_id, ctx->pd, &init_attr);
+	if (!ret)
+		ctx->qp = ctx->cm_id->qp;
+	else
+		printk(KERN_ERR PFX "create qp failed for client\n");
+
+	return ret;
+}
+
+static int kbench_setup_qp(struct kbench_context *ctx, struct rdma_cm_id *cm_id)
+{
+	int ret;
+	struct ib_cq_init_attr attr = { 0 };
+
+	ctx->pd = ib_alloc_pd(cm_id->device, 0);
+	if (IS_ERR(ctx->pd)) {
+		printk(KERN_ERR PFX "ib_alloc_pd failed\n");
+		return PTR_ERR(ctx->pd);
+	}
+	DEBUG_LOG("created pd %p\n", ctx->pd);
+
+	attr.cqe = ctx->txdepth * 2;
+	attr.comp_vector = 0;
+	ctx->cq = ib_create_cq(cm_id->device, kbench_cq_event_handler, NULL,
+			       ctx, &attr);
+
+	if (IS_ERR(ctx->cq)) {
+		printk(KERN_ERR PFX "ib_create_cq failed\n");
+		ret = PTR_ERR(ctx->cq);
+		goto err1;
+	}
+	DEBUG_LOG("created cq %p\n", ctx->cq);
+
+	ret = ib_req_notify_cq(ctx->cq, IB_CQ_NEXT_COMP);
+	if (ret) {
+		printk(KERN_ERR PFX "ib_create_cq failed\n");
+		goto err2;
+	}
+
+	ret = kbench_create_qp(ctx);
+	if (ret) {
+		printk(KERN_ERR PFX "kbench_create_qp failed: %d\n", ret);
+		goto err2;
+	}
+	DEBUG_LOG("created qp %p\n", ctx->qp);
+	return 0;
+err2:
+	ib_destroy_cq(ctx->cq);
+err1:
+	ib_dealloc_pd(ctx->pd);
+	return ret;
+}
+
+static int client_push_data(struct kbench_context *ctx, int is_end)
+{
+	int ret;
+	const struct ib_send_wr *bad_wr;
+	if (is_end) {
+		// assume sq_wr always point to send_sgl
+		((int *)(ctx->send_sgl[0].addr))[0] = 0xdeadbeef;
+	}
+	ret = ib_post_send(ctx->qp, &ctx->sq_wr, &bad_wr);
+	DEBUG_LOG("client push data\n");
+	return ret;
+}
+
+// ret, 1 -- kthread stop
+//      0 -- OK
+static int client_consumer(struct kbench_context *ctx)
+{
+	int ret, cnt;
+	u8 *data_buf;
+	ret = 0;
+	cnt = 0;
+	ctx->work_flag = WORK_IDLE;
+	data_buf = kmalloc(4096, GFP_KERNEL);
+
+	DEBUG_LOG("client waiting for request\n");
+
+	while (1) {
+		// ======================================================
+		//              Interface with rdma_initate_req API
+		// ======================================================
+		if (kthread_should_stop()) {
+			ret = 1;
+			DEBUG_LOG("thread stop 1\n");
+			ctx->work_flag = WORK_ERROR;
+			wake_up_interruptible(&ctx->sem);
+			goto out0;
+		}
+
+		// wake up
+		// wait for 3
+		wait_event_interruptible(
+			ctx->sem, (ctx->work_flag == WORK_REQ) ||
+					  (ctx->work_flag == WORK_ERROR) ||
+					  kthread_should_stop());
+		DEBUG_LOG("client recv request\n");
+
+		// thread stop
+		if (kthread_should_stop()) {
+			ret = 1;
+			DEBUG_LOG("thread stop 2\n");
+			ctx->work_flag = WORK_ERROR;
+			wake_up_interruptible(&ctx->sem);
+			goto out0;
+		}
+
+		// unexpected status
+		if (ctx->work_flag != WORK_REQ) {
+			ret = 1;
+			printk(KERN_ERR PFX
+			       "consumer, unexpected status: %d, expect WORK_REQ\n",
+			       ctx->work_flag);
+			ctx->work_flag = WORK_ERROR;
+			wake_up_interruptible(&ctx->sem);
+			goto out0;
+		}
+
+		// WORK_WORKING
+		ctx->work_flag = WORK_WORKING;
+
+		// ======================================================
+		//              Interface with RDMA server
+		// ======================================================
+		// post to server side
+		// assuem data already in ctx->data
+		ret = client_push_data(ctx, 0);
+		if (ret) {
+			printk(KERN_ERR PFX "post send buf info error%d\n",
+			       ret);
+			ctx->work_flag = WORK_ERROR;
+			wake_up_interruptible(&ctx->sem);
+			goto out0;
+		}
+
+		// await response
+		wait_event_interruptible(ctx->sem,
+					 ctx->state >= RDMA_RESP_RECV ||
+						 kthread_should_stop());
+		DEBUG_LOG("client recv %d: %d\n", ctx->thread_id, cnt);
+		cnt++;
+		if (ctx->state != RDMA_RESP_RECV) {
+			printk(KERN_ERR PFX
+			       "wait for RDMA_RESP_RECV state %d\n",
+			       ctx->state);
+			ctx->work_flag = WORK_ERROR;
+			wake_up_interruptible(&ctx->sem);
+			ret = 1;
+			break;
+		}
+		ctx->state = RDMA_AWAIT;
+
+		// ======================================================
+		//              Interface with rdma_initate_req API
+		// ======================================================
+		// WORK_DONE
+		// set to 2, avoid triggering recv req
+		ctx->work_flag = WORK_DONE;
+		wake_up_interruptible(&ctx->sem);
+
+		// NOTE: it's the requester's responsibility to set work_flag to WORK_IDLE
+
+		// other ending condition
+		/*
+       if (cnt >= ctx->count) {
+       ret = client_push_data(ctx, 1);
+       DEBUG_LOG("finished at count = %d\n", cnt);
+       break;
+       }*/
+	}
+out0:
+	kfree(data_buf);
+	return ret;
+}
+
+static int client_thread(void *data)
+{
+	int ret;
+	struct kbench_context *ctx;
+	struct sockaddr_storage sin;
+	const struct ib_recv_wr *bad_wr;
+
+	//=========================================
+	//          init connection
+	//=========================================
+	ret = 0;
+	ctx = (struct kbench_context *)data;
+	init_waitqueue_head(&ctx->sem);
+
+	ctx->cm_id = rdma_create_id(&init_net, kbench_cma_event_handler, ctx,
+				    RDMA_PS_TCP, IB_QPT_RC);
+	if (IS_ERR(ctx->cm_id)) {
+		printk(KERN_ERR PFX "create_id error\n");
+		ret = -1;
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err00;
+	}
+
+	// bind client to server
+	fill_sockaddr(&sin, ctx); // fill addr / port
+
+	ret = rdma_resolve_addr(ctx->cm_id, NULL, (struct sockaddr *)&sin,
+				2000); // resolve addr
+
+	wait_event_interruptible(
+		ctx->sem,
+		ctx->state >= ROUTE_RESOLVED ||
+			kthread_should_stop()); // wait for route establish
+	// (RDMA_CM_EVENT_ROUTE_RESOLVED)
+	if (ctx->state != ROUTE_RESOLVED) {
+		printk(KERN_ERR PFX
+		       "addr/route resolution did not resolve: state %d\n",
+		       ctx->state);
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err0;
+	}
+	DEBUG_LOG("client route resolve OK %p\n", ctx->pd);
+
+	/*
+     if (!reg_supported(ctx.cm_id->device)) {
+     printk(KERN_ERR PFX "reg_supported failed%d\n", ctx.state);
+     return;
+     }
+     DEBUG_LOG("rdma_resolve_addr - rdma_resolve_route successful\n");
+     */
+
+	// setup qp
+	ctx->pd = ib_alloc_pd(ctx->cm_id->device, 0);
+	if (IS_ERR(ctx->pd)) {
+		printk(KERN_ERR PFX "ib_alloc_pd failed\n");
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err0;
+	}
+	DEBUG_LOG("created pd %p\n", ctx->pd);
+
+	ret = kbench_setup_qp(ctx, ctx->cm_id);
+	if (ret) {
+		printk(KERN_ERR PFX "setup_qp failed: %d\n", ret);
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err0;
+	}
+	DEBUG_LOG("created qp\n");
+
+	// setup buffer
+	ret = kbench_setup_buffers(ctx);
+	if (ret) {
+		printk(KERN_ERR PFX "kbench_setup_buffers failed: %d\n", ret);
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err1;
+	}
+	DEBUG_LOG("created buffers\n");
+
+	// await receive
+	ret = ib_post_recv(ctx->qp, &ctx->rq_wr, &bad_wr);
+	if (ret) {
+		printk(KERN_ERR PFX "ib_post_recv failed: %d\n", ret);
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err2;
+	}
+
+	DEBUG_LOG("post recv OK\n");
+
+	// setup connection
+	ret = kbench_connect_client(ctx);
+	if (ret) {
+		printk(KERN_ERR PFX "connect error %d\n", ret);
+		atomic_set(&ctx->gd->thread_count, -100);
+		goto err2;
+	}
+
+	DEBUG_LOG("client setup finished\n");
+	atomic_inc(&ctx->gd->thread_count);
+	wake_up(&ctx->gd->wq);
+
+	//=========================================
+	//         start testing
+	//=========================================
+	client_consumer(ctx);
+
+	DEBUG_LOG("c_clean_0\n");
+	rdma_disconnect(ctx->cm_id);
+err2:
+	DEBUG_LOG("c_clean_1\n");
+	kbench_free_buffers(ctx);
+err1:
+	DEBUG_LOG("c_clean_2\n");
+	kbench_free_qp(ctx);
+err0:
+	DEBUG_LOG("c_clean_3\n");
+	rdma_destroy_id(ctx->cm_id);
+err00:
+	DEBUG_LOG("c_clean_4\n");
+	atomic_dec(&ctx->gd->thread_count);
+	wake_up(&ctx->gd->wq);
+
+	if (!kthread_should_stop()) {
+		wait_event_interruptible(ctx->sem, kthread_should_stop());
+	}
+
+	kfree(ctx);
+	return ret;
+}
+
+struct kbench_context **ctx_arr;
+static struct task_struct **tasks;
+
+static int kbench_static_init(void)
+{
+	int i;
+	int ret;
+	int num_threads;
+	struct kbench_context *ctx;
+	struct kbench_context *curr_ctx;
+	struct global_data *gd;
+
+	gd = kzalloc(sizeof(*gd), GFP_KERNEL);
+
+	ret = 0;
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx->size = 128;
+	ctx->count = 1; // NOT used
+
+	init_waitqueue_head(&(gd->wq));
+	num_threads = 1;
+	ctx->gd = gd;
+	ctx->txdepth = RPING_SQ_DEPTH;
+	ctx->num_threads = num_threads;
+	ctx->port = htons(20886);
+	in4_pton("192.168.200.20", -1, ctx->addr, -1, NULL);
+
+	ctx_arr = kzalloc(num_threads * sizeof(ctx), GFP_KERNEL);
+	tasks = kzalloc(num_threads * sizeof(struct task_struct *), GFP_KERNEL);
+
+	for (i = 0; i < num_threads; i++) {
+		ctx_arr[i] = kzalloc(sizeof(*ctx), GFP_KERNEL);
+		curr_ctx = ctx_arr[i];
+		memcpy(curr_ctx, ctx, sizeof(*ctx));
+
+		curr_ctx->thread_id = i;
+		// violate htons?
+		curr_ctx->port = ctx->port + i;
+
+		curr_ctx->work_flag = 0;
+
+		printk("start %d\n", i);
+
+		sprintf(curr_ctx->str_buf, "r_c%d", i);
+		printk("thread name: %s\n", curr_ctx->str_buf);
+		tasks[i] = kthread_run(client_thread, (void *)(curr_ctx),
+				       curr_ctx->str_buf);
+
+		if (IS_ERR(tasks[i])) {
+			printk(KERN_ERR PFX "kthread_run!\n");
+			num_threads = i + 1; // avoid free more than needed
+			ret = -1;
+			goto out1;
+		}
+	}
+
+	wait_event_interruptible(
+		gd->wq, atomic_read(&(gd->thread_count)) == num_threads ||
+				atomic_read(&(gd->thread_count)) < 0);
+
+	if (atomic_read(&(gd->thread_count)) < 0) {
+		DEBUG_LOG("kbench init failed\n");
+		ret = -1;
+		goto out1;
+	} else {
+		DEBUG_LOG("kbench launched %d threads\n",
+			  atomic_read(&(gd->thread_count)));
+	}
+	return ret;
+
+out1:
+	for (i = 0; i < num_threads; i++) {
+		DEBUG_LOG("clean serv/client thread: %d\n", i);
+		kthread_stop(tasks[i]);
+	}
+	DEBUG_LOG("out1\n");
+	DEBUG_LOG("kbench all thread ended\n");
+
+	kfree(ctx_arr);
+	kfree(ctx);
+	kfree(tasks);
+	kfree(gd);
+	return ret;
+}
+
+static int kbench_destory(void)
+{
+	int i;
+	int num_threads;
+	struct global_data *gd;
+
+	num_threads = ctx_arr[0]->num_threads;
+	gd = ctx_arr[0]->gd;
+
+	for (i = 0; i < num_threads; i++) {
+		DEBUG_LOG("clean serv/client thread: %d\n", i);
+		kthread_stop(tasks[i]);
+	}
+	wait_event_interruptible(gd->wq, atomic_read(&gd->thread_count) == 0);
+	DEBUG_LOG("kbench all thread ended\n");
+
+	kfree(ctx_arr);
+	kfree(tasks);
+	kfree(gd);
+	return 0;
+}
+
+static int styx_memcmp_pages(struct page *page1, struct page *page2)
+{
+	int i, ret, target, num_threads;
+	struct kbench_context *ctx;
+	u64 src_dma_addr_1, src_dma_addr_2;
+	int status = 0
+
+	if (rdma_init == 0) {
+		ret = kbench_static_init();
+		pr_info("rdma channel init.\n");
+		if (ret == 0) {
+			rdma_init = 1;
+			pr_info("rdma channel init ok.\n");
+		} else {
+			pr_err("rdma channel init failed.\n");
+			status = -1;
+
+			// we will try to init again
+			rdma_init = 0;
+			goto err0;
+		}
+		usleep_range(500, 501);
+
+	} else if (rdma_init == -1) {
+		status = -1;
+		goto err0;
+	}
+
+	ret = 0;
+	target = -1;
+	num_threads = ctx_arr[0]->num_threads;
+
+	// find an idle slot
+	for (i = 0; i < num_threads; i++) {
+		if (ctx_arr[i]->work_flag == WORK_IDLE) {
+			// copy data to slot buffer
+			// src_atomic = kmap_atomic(page1);
+			// dst_atomic = kmap_atomic(page2);
+			// memcpy(ctx_arr[i]->send_data->data, src_atomic, PAGE_SIZE);
+			// memcpy(ctx_arr[i]->send_data->data+PAGE_SIZE, dst_atomic, PAGE_SIZE);
+			// kunmap_atomic(src_atomic);
+			// kunmap_atomic(dst_atomic);
+			// ctx_arr[i]->send_data->function_type = 2;
+			ctx = ctx_arr[i];
+
+			src_dma_addr_1 = ib_dma_map_page(ctx->pd->device, page1,
+							 0, 4096,
+							 DMA_BIDIRECTIONAL);
+			src_dma_addr_2 = ib_dma_map_page(ctx->pd->device, page2,
+							 0, 4096,
+							 DMA_BIDIRECTIONAL);
+			ctx->send_sgl[0].addr = src_dma_addr_1;
+			ctx->send_sgl[0].length = 4096;
+			ctx->send_sgl[1].addr = src_dma_addr_2;
+			ctx->send_sgl[1].length = 4096;
+			ctx->sq_wr.num_sge = 2;
+
+			// inform consumer thread to work
+			ctx_arr[i]->work_flag = WORK_REQ;
+			wake_up_interruptible(&ctx_arr[i]->sem);
+
+			// found a free slot
+			target = i;
+			break;
+		}
+	}
+
+	// found a free slot
+	if (target >= 0) {
+		// pr_info("await result from worker %d\n", target);
+		ctx = ctx_arr[target];
+
+		// wait for the DONE
+		wait_event_interruptible(ctx->sem,
+					 (ctx->work_flag >= WORK_DONE ||
+					  kthread_should_stop()));
+		if (ctx->work_flag != WORK_DONE) {
+			pr_err("[styx_memcmp_pages] work_flag NOT DONE: %d\n",
+			       ctx->work_flag);
+			status = -1;
+			rdma_init = -1;
+			goto err0;
+		}
+
+		ib_dma_unmap_page(ctx->pd->device, src_dma_addr_1, 4096,
+				  DMA_BIDIRECTIONAL);
+		ib_dma_unmap_page(ctx->pd->device, src_dma_addr_2, 4096,
+				  DMA_BIDIRECTIONAL);
+
+		// ret = (int)(ntohl(((int*)(ctx->recv_data->data))[0]));
+		if (ctx->recv_data->data[0] == ZERO_RESULT) {
+			ret = 0;
+		} else if (ctx->recv_data->data[0] == POS_RESULT) {
+			ret = 1;
+		} else if (ctx->recv_data->data[0] == NEG_RESULT) {
+			ret = -1;
+		} else {
+			pr_err("[styx_memcmp_pages] invalid result: %d\n",
+			       ctx->recv_data->data[0]);
+			status = -1;
+		}
+
+		// release (WITHOUT accessing mutex)
+		ctx->work_flag = WORK_IDLE;
+
+		// no free slot
+	} else {
+		// pr_info("[memcmp offload] all occupied\n");
+		status = -1;
+	}
+err0:
+	if (status < 0) {
+		pr_err("memcmp fallback\n");
+		ret = memcmp_pages(page1, page2);
+	}
+	return ret;
+}
+
+static u32 calc_checksum(struct page *page);
+static u32 styx_calc_checksum(struct page *page)
+{
+	int i, ret, target, num_threads;
+	u64 src_dma_addr;
+	struct kbench_context *ctx;
+	int status = 0;
+	ret = 0;
+	target = -1;
+
+	if (rdma_init == 0) {
+		ret = kbench_static_init();
+		if (ret == 0) {
+			rdma_init = 1;
+			pr_info("rdma channel init ok.\n");
+		} else {
+			pr_err("rdma channel init failed.\n");
+			status = -1;
+			rdma_init = 0;
+			goto err0;
+		}
+		usleep_range(500, 501);
+
+	} else if (rdma_init == -1) {
+		status = -1;
+		return 0;
+	}
+	num_threads = ctx_arr[0]->num_threads;
+
+	// find an idle slot
+	for (i = 0; i < num_threads; i++) {
+		if (ctx_arr[i]->work_flag == WORK_IDLE) {
+			// copy data to slot buffer
+			// src_atomic = kmap_atomic(page);
+			// memcpy(ctx_arr[i]->send_data->data, src_atomic, 4096);
+			// kunmap_atomic(src_atomic);
+			// ctx_arr[i]->send_data->function_type = 1;
+			ctx = ctx_arr[i];
+
+			src_dma_addr = ib_dma_map_page(ctx->pd->device, page, 0,
+						       4096, DMA_BIDIRECTIONAL);
+			ctx->send_sgl[0].addr = src_dma_addr;
+			ctx->send_sgl[0].length = 4096;
+			ctx->sq_wr.num_sge = 1;
+
+			// inform consumer thread to work
+			ctx_arr[i]->work_flag = WORK_REQ;
+			wake_up_interruptible(&ctx_arr[i]->sem);
+
+			// found a free slot
+			target = i;
+			break;
+		}
+	}
+
+	// found a free slot
+	if (target >= 0) {
+		// pr_info("await result from worker %d\n", target);
+		ctx = ctx_arr[target];
+
+		// wait for the DONE
+		wait_event_interruptible(ctx->sem,
+					 (ctx->work_flag >= WORK_DONE ||
+					  kthread_should_stop()));
+		if (ctx->work_flag != WORK_DONE) {
+			pr_err("[checksum_offload] work_flag NOT DONE: %d\n",
+			       ctx->work_flag);
+			status = -1;
+			rdma_init = -1;
+			goto err0;
+		}
+
+		ib_dma_unmap_page(ctx->pd->device, src_dma_addr, 4096,
+				  DMA_BIDIRECTIONAL);
+
+		// copy data before releasing
+		ret = ((u32 *)(ctx->recv_data->data))[0];
+
+		// release (WITHOUT accessing mutex)
+		ctx->work_flag = WORK_IDLE;
+
+		// no free slot
+	} else {
+		// pr_info("[checksum_offload] all occupied\n");
+		status = -1;
+	}
+err0:
+	if (status < 0) {
+		pr_err("checksum fallback\n");
+		ret = calc_checksum(page);
+	}
+	return ret;
+}
+// ===================================================================
+//              STYX offload code ends
+// ===================================================================
+
 #include <linux/errno.h>
 #include <linux/mm.h>
 #include <linux/mm_inline.h>
@@ -2923,6 +4193,8 @@ again:
 
 		if (use_dsa) {
 			ret = dsa_memcmp_pages(page, tree_page);
+		} else if (use_styx) {
+			ret = styx_memcmp_pages(page, tree_page);
 		} else
 			ret = cpu_memcmp_pages(page, tree_page);
 check_ret:
@@ -3081,6 +4353,8 @@ again:
 
 		if (use_dsa)
 			ret = dsa_memcmp_pages(kpage, tree_page);
+		else if (use_styx)
+			ret = styx_memcmp_pages(kpage, tree_page);
 		else
 			ret = cpu_memcmp_pages(kpage, tree_page);
 		//ret = memcmp_pages(kpage, tree_page);
@@ -3490,6 +4764,8 @@ struct ksm_rmap_item *unstable_tree_search_insert(struct ksm_rmap_item *rmap_ite
 
 		if (use_dsa) {
 			ret = dsa_memcmp_pages(page, tree_page);
+		} else if (use_styx) {
+			ret = styx_memcmp_pages(page, tree_page);
 		} else
 			ret = cpu_memcmp_pages(page, tree_page);
 
@@ -4879,6 +6155,8 @@ static void cmp_and_merge_page(struct page *page, struct ksm_rmap_item *rmap_ite
 	 */
 	if (use_dsa && use_dsa_for_hash)
 		checksum = dsa_calc_checksum(page);
+	else if (use_styx)
+		checksum = styx_calc_checksum(page);
 	else
 		checksum = calc_checksum(page);
 	if (rmap_item->oldchecksum != checksum) {
@@ -6321,6 +7599,31 @@ static ssize_t full_scans_show(struct kobject *kobj,
 }
 KSM_ATTR_RO(full_scans);
 
+/* Sysfs interface for STYX */
+static ssize_t styx_on_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", use_styx);
+}
+
+static ssize_t styx_on_store(struct kobject *kobj, struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int on;
+	int err;
+	err = kstrtoint(buf, 10, &on);
+	if (err)
+		return -EINVAL;
+	if (on > 1 || on < 0)
+		return -EINVAL;
+	if (use_dsa) {
+		pr_err("cannat be used with DSA\n");
+		return -EINVAL;
+	}
+	use_styx = on;
+	return count;
+}
+static struct kobj_attribute styx_on_attr = __ATTR_RW(styx_on);
+
 /* Sysfs interface for DSA */ 
 static ssize_t dsa_on_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
@@ -6635,6 +7938,7 @@ static struct attribute *ksm_attrs[] = {
 	&stable_node_dups_attr.attr,
 	&stable_node_chains_prune_millisecs_attr.attr,
 	&use_zero_pages_attr.attr,
+	&styx_on_attr.attr,
 	&dsa_on_attr.attr,
 	&dsa_cpu_hybrid_mode_attr.attr,
 	&dsa_completion_mode_attr.attr,
