@@ -34,6 +34,7 @@ ksm_sysfs="/sys/kernel/mm/ksm"
 
 # KSM common config
 dsa_on=0
+styx_on=0
 batch_mode=0
 cand_batch_size=1
 tree_batch_size=1
@@ -45,8 +46,9 @@ hybrid=0
 dsa_completion_modes=("async" "spin" "spin_wait" "mwait" "spin_sched" "mwait_sched")
 
 usage() {
-	echo "Usage: $0 [--dsa] [--cand-batch] [--spec-batch] [--cand-batch-size <value>] [--tree-batch-size <value>] [--dsa-comp-mode <value>] [--dsa-cpu-hybrid]"
+	echo "Usage: $0 [--dsa] [--styx] [--cand-batch] [--spec-batch] [--cand-batch-size <value>] [--tree-batch-size <value>] [--dsa-comp-mode <value>] [--dsa-cpu-hybrid]"
 	echo "	--dsa				Use DSA"
+	echo "	--styx				Use STYX"
 	echo "	--cand-batch			Enable KSM candidate batching mode"
 	echo "	--spec-batch			Enable KSM speculative batching mode"
 	echo "	--cand-batch-size		Candidate batching size"
@@ -67,6 +69,7 @@ ksm_reset() {
 
 	echo 0 > $ksm_sysfs/run
 	echo 0 > $ksm_sysfs/dsa_on
+	echo 0 > $ksm_sysfs/styx_on
 
 	echo 0 > $ksm_sysfs/dsa_completion_mode
 	echo 0 > $ksm_sysfs/dsa_cpu_hybrid_mode
@@ -104,6 +107,10 @@ setup_ksm() {
 		fi
 	fi
 
+	if [[ "$styx_on" -eq 1 ]]; then
+		echo 1 > $ksm_sysfs/styx_on
+	fi
+
 	echo 1 > $ksm_sysfs/run
 }
 
@@ -112,6 +119,12 @@ main() {
 		case $1 in
 		--dsa)
 			dsa_on=1
+			;;
+		--styx)
+			if [[ "$dsa_on" -eq 1 ]]; then
+				usage
+			fi
+			styx_on=1
 			;;
 		--cand-batch)
 			batch_mode=$(set_bit $batch_mode 0)

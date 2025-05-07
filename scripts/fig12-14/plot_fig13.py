@@ -30,6 +30,6 @@ plt.legend()
 plt.ylim(0,20)
 plt.grid(True, linestyle='--', linewidth=0.5)
 plt.tight_layout()
-plt.show()
+#plt.show()
 plt.savefig('fig13.png')
 

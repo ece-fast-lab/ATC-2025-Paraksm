@@ -101,6 +101,14 @@ run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
 #END
 
 # 7. Run STYX
+:<<END
+system_mode="styx"
+nice_value="rt"
+tree="1"
+cand="1"
+usleep_time="0"
+run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
+END
 
 
 # 8. Clean Redis VM

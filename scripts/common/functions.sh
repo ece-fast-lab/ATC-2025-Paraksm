@@ -46,6 +46,9 @@ set_ksm() {
 	dsa_single)
 		${set_ksm_dir}/set_ksm.sh --dsa --dsa-comp-mode spin_sched
 		;;
+	styx)
+		${set_ksm_dir}/set_ksm.sh --styx
+		;;
 	dsa_hybrid)
 		${set_ksm_dir}/set_ksm.sh --dsa --dsa-comp-mode spin_sched --dsa-cpu-hybrid
 		;;
@@ -86,6 +89,10 @@ set_ksm() {
 
 	if [[ $mode == "cpu_single" ]]; then
 		echo 20 > /sys/kernel/mm/ksm/sleep_millisecs
+		echo 2048 > /sys/kernel/mm/ksm/pages_to_scan
+	fi
+	if [[ $mode == "styx" ]]; then
+		echo 0 > /sys/kernel/mm/ksm/sleep_millisecs
 		echo 2048 > /sys/kernel/mm/ksm/pages_to_scan
 	fi
 	if [[ $mode == "dsa_single" ]]; then
