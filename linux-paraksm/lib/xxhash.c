@@ -101,7 +101,7 @@ static uint32_t xxh32_round(uint32_t seed, const uint32_t input)
 	return seed;
 }
 
-
+/*
 uint32_t xxh32_nt(const void *input, const size_t len, const uint32_t seed)
 {
 	const uint8_t *p = (const uint8_t *)input;
@@ -235,6 +235,7 @@ uint32_t xxh32_128nt(const void *input, const size_t len, const uint32_t seed)
 	return h32;
 }
 EXPORT_SYMBOL(xxh32_128nt);
+*/
 
 uint32_t xxh32(const void *input, const size_t len, const uint32_t seed)
 {

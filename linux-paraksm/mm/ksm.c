@@ -1073,7 +1073,7 @@ static int styx_memcmp_pages(struct page *page1, struct page *page2)
 	int i, ret, target, num_threads;
 	struct kbench_context *ctx;
 	u64 src_dma_addr_1, src_dma_addr_2;
-	int status = 0
+	int status = 0;
 
 	if (rdma_init == 0) {
 		ret = kbench_static_init();

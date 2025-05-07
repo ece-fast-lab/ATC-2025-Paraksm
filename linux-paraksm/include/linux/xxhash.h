@@ -93,8 +93,10 @@
  * Return:  The 32-bit hash of the data.
  */
 uint32_t xxh32(const void *input, size_t length, uint32_t seed);
+/*
 uint32_t xxh32_nt(const void *input, size_t length, uint32_t seed);
 uint32_t xxh32_128nt(const void *input, size_t length, uint32_t seed);
+*/
 
 /**
  * xxh64() - calculate the 64-bit hash of the input with a given seed.
@@ -132,6 +134,7 @@ static inline unsigned long xxhash(const void *input, size_t length,
 #endif
 }
 
+/*
 static inline unsigned long xxhash_32_nt(const void *input, size_t length,
 				   uint64_t seed)
 {
@@ -143,6 +146,7 @@ static inline unsigned long xxhash_128_nt(const void *input, size_t length,
 {
        return xxh32_128nt(input, length, seed);
 }
+*/
 
 /*-****************************
  * Streaming Hash Functions
