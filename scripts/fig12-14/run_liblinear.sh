@@ -49,8 +49,8 @@ for dir in "${dirs[@]}"; do
 	fi
 done
 
-# 2. Setup Redis VM
-:<<END
+# 2. Setup Liblinear VM
+#:<<END
 echo 2 > /sys/kernel/mm/ksm/run
 ../common/start_vms.sh ${liblinear_vm}
 sleep 60
@@ -59,12 +59,12 @@ sleep 60
 load_liblinear
 run_liblinear
 wait_only
-END
+#END
 
 workload="liblinear"
 
 # 3. Run no-ksm
-:<<END
+#:<<END
 system_mode="no_ksm"
 nice_value="5"
 tree="1"
@@ -79,27 +79,27 @@ tree="1"
 cand="1"
 usleep_time="0"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
+#END
 
 # 5. Run DSA-ksm
-:<<END
+#:<<END
 system_mode="dsa_single"
 nice_value="rt"
 tree="1"
 cand="1"
 usleep_time="30"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
+#END
 
 # 6. Run Para-ksmC
-:<<END
+#:<<END
 system_mode="candidate"
 nice_value="rt"
 tree="1"
 cand="256"
 usleep_time="95"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
+#END
 
 # 7. Run STYX
 :<<END
@@ -112,7 +112,7 @@ run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
 END
 
 
-# 8. Clean Redis VM
+# 8. Clean VM
 echo 2 > /sys/kernel/mm/ksm/run
 #:<<END
 ../common/shutdown_vms.sh ${liblinear_vm}

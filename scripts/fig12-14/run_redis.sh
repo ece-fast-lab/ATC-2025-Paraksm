@@ -50,7 +50,7 @@ for dir in "${dirs[@]}"; do
 done
 
 # 2. Setup Redis VM
-:<<END
+#:<<END
 echo 2 > /sys/kernel/mm/ksm/run
 ../common/start_vms.sh ${redis_vm}
 sleep 60
@@ -58,14 +58,14 @@ sleep 60
 sleep 60
 load_redis
 sleep 10
-END
+#END
 
-workloads=("c")
-#workloads=("a" "b" "c" "d")
+#workloads=("c")
+workloads=("a" "b" "c" "d")
 for workload in ${workloads[@]}
 do
 # 3. Run no-ksm
-:<<END
+#:<<END
 system_mode="no_ksm"
 nice_value="5"
 tree="1"
@@ -80,10 +80,10 @@ tree="1"
 cand="1"
 usleep_time="0"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
+#END
 
 # 5. Run DSA-ksm
-:<<END
+#:<<END
 system_mode="dsa_single"
 nice_value="rt"
 tree="1"
@@ -98,7 +98,7 @@ tree="1"
 cand="256"
 usleep_time="50"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
+#END
 
 # 7. Run STYX
 :<<END

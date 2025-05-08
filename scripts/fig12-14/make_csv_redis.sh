@@ -12,11 +12,11 @@ script_dir=../common/data_parsing
 # 			PARAM SET			#
 #########################################################
 # workload
-#workloads=("a" "b" "c" "d")
-workloads=("c")
+workloads=("a" "b" "c" "d")
+#workloads=("c")
 
-#system_modes=("no_ksm" "cpu_single" "dsa_single" "candidate")
-system_modes=("no_ksm" "cpu_single" "candidate")
+system_modes=("no_ksm" "cpu_single" "dsa_single" "candidate")
+#system_modes=("no_ksm" "cpu_single" "candidate")
 
 # measure time for mem saving and cpu cycle
 measure_time=70
@@ -48,8 +48,8 @@ nice_values["candidate"]="rt"
 # uslee_time
 usleep_times["no_ksm"]="0" 
 usleep_times["cpu_single"]="0"
-usleep_times["dsa_single"]="30" # 30
-usleep_times["candidate"]="50" 
+usleep_times["dsa_single"]="30"
+usleep_times["candidate"]="95" 
 
 
 #########################################################

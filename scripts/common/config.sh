@@ -2,9 +2,9 @@
 set_ksm_dir="/home/mhkim/workspace/paraksm-ae/scripts/common"
 #set_ksm_dir="/home/mhkim/workspace/dsa-ksm"
 
-redis_vm="redis"
-graph500_vm="graph500"
-liblinear_vm="graph500"
+redis_vm="paraksm"
+graph500_vm="paraksm"
+liblinear_vm="paraksm"
 
 vm_id="root"
 vm_passwd="mh"
@@ -30,8 +30,8 @@ CPU["vm_no_ksm"]="0,2-39"
 
 rccount=700000 # 4GB
 declare -A Target
-Target[a]=2000
-Target[b]=2000
-Target[c]=1000
-Target[d]=2000
+Target[a]=500
+Target[b]=500
+Target[c]=500
+Target[d]=500
 Time=200

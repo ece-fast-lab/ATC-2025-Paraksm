@@ -49,8 +49,8 @@ for dir in "${dirs[@]}"; do
 	fi
 done
 
-# 2. Setup Redis VM
-:<<END
+# 2. Setup Graph500 VM
+#:<<END
 echo 2 > /sys/kernel/mm/ksm/run
 ../common/start_vms.sh ${graph500_vm}
 sleep 60
@@ -59,19 +59,19 @@ sleep 60
 load_graph500
 run_graph500
 wait_only
-END
+#END
 
 workload="graph500"
 
 # 3. Run no-ksm
-:<<END
+#:<<END
 system_mode="no_ksm"
 nice_value="5"
 tree="1"
 cand="1"
 usleep_time="0"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
+#END
 
 # 4. Run CPU-ksm
 #:<<END
@@ -111,11 +111,11 @@ run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
 END
 
 
-# 8. Clean Redis VM
+# 8. Clean VM
 echo 2 > /sys/kernel/mm/ksm/run
-:<<END
+#:<<END
 ../common/shutdown_vms.sh ${graph500_vm}
 sleep 60
 ../common/vm_check.sh ${graph500_vm}
 sleep 10
-END
+#END
