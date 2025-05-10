@@ -15,10 +15,8 @@ script_dir=../common/data_parsing
 workloads=("liblinear")
 
 # system mode
-#system_modes=("no_ksm" "cpu_single" "dsa_single" "candidate") 
-system_modes=("no_ksm" "cpu_single" "candidate") 
+system_modes=("no_ksm" "cpu_single" "dsa_single" "candidate") 
 
-# measure time for mem saving and cpu cycle
 measure_time=5
 
 declare -A tree_sizes
@@ -48,8 +46,8 @@ nice_values["candidate"]="rt"
 # usleep
 usleep_times["no_ksm"]="0"
 usleep_times["cpu_single"]="0"
-usleep_times["dsa_single"]="30" 
-usleep_times["candidate"]="95" # 70 100 130 
+usleep_times["dsa_single"]="50" 
+usleep_times["candidate"]="95"
 
 
 #########################################################
@@ -129,23 +127,6 @@ else
 	ksmd_cpu_utilization=$(echo "scale=1; 100*$ksm_cpu_cycles/$total_cpu_cycles" | bc)
 	memory_saving_per_cpu_cycles=$(echo "scale=3; 1024 * 1024 * $memory_saving/$ksm_cpu_cycles" | bc)
 	memory_saving_per_cpu_cycles_by_time=$(echo "scale=3; 1024 * 1024 * $memory_saving_by_time/$ksm_cpu_cycles_by_time" | bc)
-fi
-if [ $system_mode = "candidate" ]; then
-	compare_utilization=$(echo "scale=1; $compare_count/$compare_batch_count" | bc)
-	crc_utilization=$(echo "scale=1; $crc_count/$crc_batch_count" | bc)
-	compare_utilization=$(echo "scale=1; 100 * $compare_utilization/$cand_size" | bc)
-	crc_utilization=$(echo "scale=1; 100 * $crc_utilization/$cand_size" | bc)
-elif [ $system_mode = "speculative" ]; then
-	compare_utilization=$(echo "scale=1; $compare_count/$compare_batch_count" | bc)
-	crc_utilization=$(echo "scale=1; $crc_count/$crc_batch_count" | bc)
-	compare_utilization=$(echo "scale=1; 100 * $compare_utilization/$tree_size" | bc)
-	crc_utilization=$(echo "scale=1; 100 * $crc_utilization/$tree_size" | bc)
-elif [ $system_mode == "dsa_single" ]; then
-	compare_utilization=100
-	crc_utilization=100
-else 
-	compare_utilization=0
-	crc_utilization=0
 fi
 
 echo "$workload,$system_mode,$tree_size,$cand_size,$usleep_time,$run_time_affected_VM,$llc_miss_rate,$ksmd_cpu_utilization,$memory_saving_per_cpu_cycles,$memory_saving"

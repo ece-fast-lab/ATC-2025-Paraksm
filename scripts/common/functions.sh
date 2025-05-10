@@ -220,6 +220,12 @@ load_redis() {
 	wait
 }
 
+declare -A Target
+Target["no_ksm"]=30
+Target["cpu_single"]=200
+Target["dsa_single"]=30
+Target["candidate"]=200
+
 run_redis() {
 	local workload=$1
 	local mode=$2
@@ -247,7 +253,7 @@ run_redis() {
 		client_ip=`virsh domifaddr ${redis_vm}-$((i)) | awk '/vnet/{print \$4}' | cut -d'/' -f1`
 
 		sshpass -p $vm_passwd ssh -o 'StrictHostKeyChecking=no' $vm_id@$client_ip \
-			"cd ./YCSB; ./bin/ycsb run redis -s -P workloads/workload${workload} -P configs/config-run.dat -p redis.host=${server_ip} -p recordcount=$rccount -p operationcount=3000000 -p maxexecutiontime=${Time} -p requestdistribution=uniform -target ${Target[${workload}]}" > $data_dir/redis_latency/client${client_id}_${workload}_${mode}_${tree}_${cand}_${nice_value}_${us}_latency.dat 2>/dev/null &
+			"cd ./YCSB; ./bin/ycsb run redis -s -P workloads/workload${workload} -P configs/config-run.dat -p redis.host=${server_ip} -p recordcount=$rccount -p operationcount=3000000 -p maxexecutiontime=${Time} -p requestdistribution=uniform -target ${Target[${mode}]}" > $data_dir/redis_latency/client${client_id}_${workload}_${mode}_${tree}_${cand}_${nice_value}_${us}_latency.dat 2>/dev/null &
 		wait_pids+=($!)
 
 		client_id=$((client_id + 1))
@@ -323,19 +329,19 @@ measure_llc_miss() {
 
 	echo "MEASIRE LLC MISS"
 	# CORE
-	# sudo perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -C 1 -I 1000 \
-	sudo perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${vm1_pid} -I 1000 \
+	# perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -C 1 -I 1000 \
+	perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${vm1_pid} -I 1000 \
 			-o $data_file_core &
 	
-	# sudo perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -C 1 \
-	sudo perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${vm1_pid} \
+	# perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -C 1 \
+	perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${vm1_pid} \
 			-o $data_file_core_total &
 
 	# KSM
-	sudo perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${ksmd_pid} -I 1000 \
+	perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${ksmd_pid} -I 1000 \
 			-o $data_file_ksm &
 	
-	sudo perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${ksmd_pid} \
+	perf stat -e 'LLC-load-misses, LLC-loads, LLC-store-misses, LLC-stores' -p ${ksmd_pid} \
 			-o $data_file_ksm_total &
 }
 
@@ -359,22 +365,22 @@ measure_cpu_cycle() {
 	echo "MEASURE CPU CYCLE"
 	vm_pid=$(ps -C qemu-system-x86_64 -o pid,cmd | grep -w "${vm_name}-1" | awk '{print $1}')
 	# TOTAL
-	# sudo perf stat -e 'cpu-cycles' -C 0 -I 5000 \
-	sudo perf stat -e 'cpu-cycles' -C 1 \
+	# perf stat -e 'cpu-cycles' -C 0 -I 5000 \
+	perf stat -e 'cpu-cycles' -C 1 \
 			-o $data_file_core &
-	sudo perf stat -e 'cpu-cycles' -C 1 -I 1000 \
+	perf stat -e 'cpu-cycles' -C 1 -I 1000 \
 			-o $data_file_core_per_second &
 	# KSM
-	# sudo perf stat -e 'cpu-cycles' -p $ksmd_pid -I 5000 \
-	sudo perf stat -e 'cpu-cycles' -p $ksmd_pid \
+	# perf stat -e 'cpu-cycles' -p $ksmd_pid -I 5000 \
+	perf stat -e 'cpu-cycles' -p $ksmd_pid \
 			-o $data_file_ksm &
-	sudo perf stat -e 'cpu-cycles' -I 1000 -p $ksmd_pid \
+	perf stat -e 'cpu-cycles' -I 1000 -p $ksmd_pid \
 			-o $data_file_ksm_per_second &
 
 	# Redis VM
-	sudo perf stat -e 'cpu-cycles' -p $vm_pid \
+	perf stat -e 'cpu-cycles' -p $vm_pid \
 			-o $data_file_vm &
-	sudo perf stat -e 'cpu-cycles' -p $vm_pid -I 1000 \
+	perf stat -e 'cpu-cycles' -p $vm_pid -I 1000 \
 			-o $data_file_vm_per_second &
 }
 
@@ -463,30 +469,26 @@ wait_redis() {
 wait_and_measure_exec_time() {
 	local data_file=$1
 	echo "WAIT AND MEASURE EXEC TIME"
-	start_time=$(date +%s)  # 전체 실행 시작 시간
+	start_time=$(date +%s) 
 	echo $start_time
 
 	echo "WAIT_PID NUM: ${#wait_pids[@]}"
-	# 폴링하여 PID를 추적
 	while [ "${#wait_pids[@]}" -gt 0 ]; do
   		for i in "${!wait_pids[@]}"; do
     			pid=${wait_pids[$i]}
 
-   		 	# PID가 종료되었는지 확인
     			if ! kill -0 "$pid" 2>/dev/null; then
       				end_time=$(date +%s)
 				echo $end_time
-      				exec_time[$pid]=$((end_time - start_time))  # 실행 시간 기록
-      				unset 'wait_pids[i]'  # 배열에서 제거
+      				exec_time[$pid]=$((end_time - start_time))
+      				unset 'wait_pids[i]' 
     			fi
   		done
 
-  		# 배열을 정리하여 빈 슬롯 제거
   		wait_pids=("${wait_pids[@]}")
-  		sleep 1  # 1초 대기 (폴링 주기)
+  		sleep 1 
 	done
 
-	# 평균 실행 시간 계산
 	local total_time=0
 	local count=0
 	for i in "${!exec_time[@]}"; do
@@ -499,7 +501,6 @@ wait_and_measure_exec_time() {
 
 	local avg_time=$(echo "$total_time / $count" | bc -l)
 
-	# 결과 출력
 	for e_t in "${exec_time[@]}"; do
 		echo -n "${e_t}," >> "${data_file}.all"
 	done
@@ -510,29 +511,24 @@ wait_and_measure_exec_time() {
 
 wait_only() {
 	echo "WAIT ONLY"
-	start_time=$(date +%s)  # 전체 실행 시작 시간
+	start_time=$(date +%s) 
 
 	echo "WAIT_PID NUM: ${#wait_pids[@]}"
-	# 폴링하여 PID를 추적
 	while [ "${#wait_pids[@]}" -gt 0 ]; do
   		for i in "${!wait_pids[@]}"; do
     			pid=${wait_pids[$i]}
 
-   		 	# PID가 종료되었는지 확인
     			if ! kill -0 "$pid" 2>/dev/null; then
       				end_time=$(date +%s)
-      				exec_time[$pid]=$((end_time - start_time))  # 실행 시간 기록
-      				unset 'wait_pids[i]'  # 배열에서 제거
+      				exec_time[$pid]=$((end_time - start_time))
+      				unset 'wait_pids[i]' 
     			fi
   		done
 
-  		# 배열을 정리하여 빈 슬롯 제거
   		wait_pids=("${wait_pids[@]}")
-  		sleep 1  # 1초 대기 (폴링 주기)
+  		sleep 1 
 	done
 
-
-	# 평균 실행 시간 계산
 	local total_time=0
 	local count=0
 	for i in "${!exec_time[@]}"; do
@@ -545,7 +541,6 @@ wait_only() {
 
 	local avg_time=$(echo "$total_time / $count" | bc -l)
 
-	# 결과 출력
 	echo "affected: ${exec_time[${affected_pid}]}, not_affected: $avg_time"
 }
 

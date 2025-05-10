@@ -84,8 +84,6 @@ ax.bar(x + width, para_ksm, width, label='Para-ksmC', color='goldenrod')
 ax.set_ylabel('Perf. degradation\nnorm. no-ksm', fontsize=9)
 ax.set_xticks(x)
 ax.set_xticklabels(labels, fontsize=8)
-ax.set_yticks(np.arange(0, 7, 1))
-ax.set_ylim([0, 6.5])
 ax.legend(fontsize=8, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.10))
 ax.grid(axis='y', linestyle='--', linewidth=0.5)
 

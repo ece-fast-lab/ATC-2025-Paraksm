@@ -50,7 +50,6 @@ for dir in "${dirs[@]}"; do
 done
 
 # 2. Setup Redis VM
-#:<<END
 echo 2 > /sys/kernel/mm/ksm/run
 ../common/start_vms.sh ${redis_vm}
 sleep 60
@@ -58,14 +57,11 @@ sleep 60
 sleep 60
 load_redis
 sleep 10
-#END
 
-#workloads=("c")
 workloads=("a" "b" "c" "d")
 for workload in ${workloads[@]}
 do
 # 3. Run no-ksm
-#:<<END
 system_mode="no_ksm"
 nice_value="5"
 tree="1"
@@ -80,15 +76,13 @@ tree="1"
 cand="1"
 usleep_time="0"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-#END
 
 # 5. Run DSA-ksm
-#:<<END
 system_mode="dsa_single"
 nice_value="rt"
 tree="1"
 cand="1"
-usleep_time="30"
+usleep_time="50"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
 
 # 6. Run Para-ksmC
@@ -96,27 +90,14 @@ system_mode="candidate"
 nice_value="rt"
 tree="1"
 cand="256"
-usleep_time="50"
+usleep_time="115"
 run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-#END
-
-# 7. Run STYX
-:<<END
-system_mode="styx"
-nice_value="rt"
-tree="1"
-cand="1"
-usleep_time="0"
-run_expr $system_mode $nice_value $tree $cand $workload $usleep_time
-END
 
 done
 
-# 8. Clean Redis VM
-#:<<END
+# 7. Clean Redis VM
 echo 2 > /sys/kernel/mm/ksm/run
 ../common/shutdown_vms.sh ${redis_vm}
 sleep 60
 ../common/vm_check.sh ${redis_vm}
 sleep 10
-#END

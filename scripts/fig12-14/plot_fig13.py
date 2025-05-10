@@ -5,7 +5,7 @@ import sys
 r_id = sys.argv[1]
 
 df_cpu = pd.read_csv(f"./result_{r_id}/liblinear/ksm_stat/liblinear_cpu_single_1_1_5_0.csv")
-df_dsa = pd.read_csv(f"./result_{r_id}/liblinear/ksm_stat/liblinear_dsa_single_1_1_rt_30.csv")
+df_dsa = pd.read_csv(f"./result_{r_id}/liblinear/ksm_stat/liblinear_dsa_single_1_1_rt_50.csv")
 df_candidate = pd.read_csv(f"./result_{r_id}/liblinear/ksm_stat/liblinear_candidate_1_256_rt_95.csv")
 
 df_cpu["memory_saving(GB)"] = df_cpu["memory_saving(MB)"] / 1024
@@ -30,6 +30,5 @@ plt.legend()
 plt.ylim(0,20)
 plt.grid(True, linestyle='--', linewidth=0.5)
 plt.tight_layout()
-#plt.show()
 plt.savefig('fig13.png')
 

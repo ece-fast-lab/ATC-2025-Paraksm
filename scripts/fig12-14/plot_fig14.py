@@ -53,9 +53,9 @@ bar2 = ax.bar(x + bar_width/2, pivot_df['Para-ksmC'], bar_width, label='Para-ksm
 ax.set_ylabel("Dedup. efficiency\n(norm. cpu-ksm)", fontsize=font_size)
 ax.set_xticks(x)
 ax.set_xticklabels(pivot_df.index, rotation=45, ha='right', fontsize=font_size)
+ax.axhline(y=1, linestyle='--', color='gray')
 ax.set_ylim(0, 2.0)
 ax.legend(loc='upper center', ncol=2, fontsize=font_size)
 
 plt.tight_layout()
-#plt.show()
 plt.savefig('fig14.png')

@@ -1,10 +1,9 @@
 #!/bin/bash
-set_ksm_dir="/home/mhkim/workspace/paraksm-ae/scripts/common"
-#set_ksm_dir="/home/mhkim/workspace/dsa-ksm"
+set_ksm_dir="/home/mhkim/workspace/ATC-2025-Paraksm/scripts/common"
 
-redis_vm="paraksm"
-graph500_vm="paraksm"
-liblinear_vm="paraksm"
+redis_vm="redis"
+graph500_vm="graph500"
+liblinear_vm="graph500"
 
 vm_id="root"
 vm_passwd="mh"
@@ -28,10 +27,5 @@ CPU["client"]="0,2-4,6-8,10-12,14-16,18-20,22-24,26-28,30-32,34-36,38-39"
 CPU["vm_ksm"]="1"
 CPU["vm_no_ksm"]="0,2-39"
 
-rccount=700000 # 4GB
-declare -A Target
-Target[a]=500
-Target[b]=500
-Target[c]=500
-Target[d]=500
+rccount=700000
 Time=200

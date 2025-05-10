@@ -13,19 +13,15 @@ script_dir=../common/data_parsing
 #########################################################
 # workload
 workloads=("a" "b" "c" "d")
-#workloads=("c")
 
 system_modes=("no_ksm" "cpu_single" "dsa_single" "candidate")
-#system_modes=("no_ksm" "cpu_single" "candidate")
-
-# measure time for mem saving and cpu cycle
-measure_time=70
 
 declare -A tree_sizes
 declare -A cand_sizes
 declare -A isolates
 declare -A nice_values
 declare -A usleep_times
+declare -A measure_times
 
 # tree size
 tree_sizes["no_ksm"]="1"
@@ -48,9 +44,13 @@ nice_values["candidate"]="rt"
 # uslee_time
 usleep_times["no_ksm"]="0" 
 usleep_times["cpu_single"]="0"
-usleep_times["dsa_single"]="30"
-usleep_times["candidate"]="95" 
+usleep_times["dsa_single"]="50"
+usleep_times["candidate"]="115" 
 
+measure_times["no_ksm"]="1"
+measure_times["cpu_single"]="199"
+measure_times["dsa_single"]="199"
+measure_times["candidate"]="199"
 
 #########################################################
 # 			GET VALUE			#
@@ -111,6 +111,7 @@ crc_batch_count=$(tail -n 9 "$file_path" | awk -F',' 'NR==1 {print $3}')
 # Memory Saving By Time
 file_path=${data_dir}/cpu_util/${file_name}_ksm_per_second.dat
 script_file_path=$script_dir/ksm_cycle_by_time.sh 
+measure_time=${measure_times[${system_mode}]}
 if [ $system_mode = "no_ksm" ]; then
 	ksm_cpu_cycles_by_time=0
 else

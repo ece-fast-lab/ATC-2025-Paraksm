@@ -296,7 +296,7 @@ LIBAPI_DESTDIR = $(LIBAPI_OUTPUT)
 LIBAPI_INCLUDE = $(LIBAPI_DESTDIR)/include
 LIBAPI = $(LIBAPI_OUTPUT)/libapi.a
 export LIBAPI
-CFLAGS += -I$(LIBAPI_OUTPUT)/include
+CFLAGS += -I$(LIBAPI_OUTPUT)/include -Wno-error=nonnull
 
 ifneq ($(OUTPUT),)
   LIBBPF_OUTPUT = $(abspath $(OUTPUT))/libbpf
