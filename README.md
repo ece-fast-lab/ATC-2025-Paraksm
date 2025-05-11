@@ -30,7 +30,7 @@ Our artifact contains the linux kernel source files for $\texttt{Para-ksm}$ and 
 ## Experiment Workflow
 For setting up the environment and building from scratch, please follow steps 1, 2, and 3.
 
-For ATC 2025 AE, we have already cloned this repo and precompiled the kernel on the server. The kernel is already installed on the server. All the necessary drivers and libraries are installed on server and benchmarks are ready in the virtual machines. You can skip step 1, 2, and only perform step 3 for result reproduction.
+**For ATC 2025 AE, we have already cloned this repo and precompiled the kernel on the server. The kernel is already installed on the server. All the necessary drivers and libraries are installed on server and benchmarks are ready in the virtual machines. You can skip step 1, 2, and only perform step 3 for result reproduction.**
 
 ### 1. Kernel compilation
 To compile the kernel, please follow these steps:
